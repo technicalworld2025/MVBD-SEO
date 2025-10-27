@@ -15,9 +15,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAIN_CHANNEL_ID = -1001234567890  # Replace with your main channel ID (https://t.me/MVPMCC)
-REQUEST_GROUP_ID = -1001234567891  # Replace with your request group ID (https://t.me/moviesversebdreq)
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+MAIN_CHANNEL_ID = -1002570721543  # Replace with your main channel ID (https://t.me/MVPMCC)
+REQUEST_GROUP_ID = -1002686709725  # Replace with your request group ID (https://t.me/moviesversebdreq)
+BOT_TOKEN = os.getenv('8298808592:AAGAARB2_bWJoqYPJB4uzF0lkImt3-HtKVw')
 
 # Movie database (stores movie titles and their message IDs from main channel)
 MOVIES_DB = {}
@@ -36,7 +36,7 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     
     # Check if user is admin (you can add admin IDs here)
-    ADMIN_IDS = [123456789]  # Replace with actual admin IDs
+    ADMIN_IDS = [6643046428]  # Replace with actual admin IDs
     
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ You don't have permission to use this command.")
