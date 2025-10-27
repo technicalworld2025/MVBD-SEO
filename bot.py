@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 MAIN_CHANNEL_ID = -1002570721543  # Replace with your main channel ID (https://t.me/MVPMCC)
 REQUEST_GROUP_ID = -1002686709725  # Replace with your request group ID (https://t.me/moviesversebdreq)
-BOT_TOKEN = os.getenv('8298808592:AAGAARB2_bWJoqYPJB4uzF0lkImt3-HtKVw')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # Movie database (stores movie titles and their message IDs from main channel)
 MOVIES_DB = {}
