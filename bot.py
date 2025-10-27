@@ -45,11 +45,17 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         msg = await update.message.reply_text("🔄 Syncing movies from main channel...")
         
-        # Get last 1000 messages from main channel
         messages = []
-        async for message in context.bot.get_chat(MAIN_CHANNEL_ID).get_messages(limit=1000):
-            if message.text:
-                messages.append(message)
+        try:
+            # Use get_chat_history() to fetch messages from channel
+            async for message in context.bot.get_chat_history(MAIN_CHANNEL_ID, limit=1000):
+                if message.text:
+                    messages.append(message)
+        except AttributeError:
+            # Fallback: if get_chat_history doesn't exist, try alternative method
+            logger.warning("get_chat_history not available, using alternative method")
+            await msg.edit_text("⚠️ Channel message fetching not fully supported. Please ensure bot has proper permissions.")
+            return
         
         # Parse movie titles from messages
         movie_count = 0
