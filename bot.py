@@ -29,17 +29,19 @@ SEARCH_CACHE = {}
 
 app = Flask(__name__)
 application = None
+loop = None
 
 @app.route('/')
 def health_check():
     return 'Bot is running', 200
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
+        # Run async function in sync context
+        asyncio.run(application.process_update(update))
         return 'ok', 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
@@ -231,6 +233,12 @@ async def setup_webhook(app_instance):
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
 
+async def initialize_bot():
+    """Initialize the bot application"""
+    await application.initialize()
+    await application.start()
+    logger.info("Bot application initialized and started")
+
 def main() -> None:
     """Start the bot"""
     global application
@@ -251,6 +259,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
     
     logger.info("Setting up webhook...")
+    asyncio.run(initialize_bot())
     asyncio.run(setup_webhook(application))
     
     # Start Flask app (handles webhook requests)
