@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MAIN_CHANNEL_ID = -1003117912335  # User's main channel
 REQUEST_GROUP_ID = -1002686709725  # Request group
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://your-app.onrender.com')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://mvbd-seo.onrender.com')
 
 # Movie database
 MOVIES_DB = {}
@@ -34,7 +34,7 @@ application = None
 def health_check():
     return 'Bot is running', 200
 
-@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 async def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
@@ -225,7 +225,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def setup_webhook(app_instance):
     """Setup webhook for Telegram"""
     try:
-        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        webhook_url = f"{WEBHOOK_URL}/webhook"
         await app_instance.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
