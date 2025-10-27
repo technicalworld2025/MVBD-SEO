@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 import json
+import signal
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -29,6 +30,7 @@ WAITING_FOR_MOVIE_LINK = 2
 
 app = Flask(__name__)
 application = None
+app_loop = None
 
 def load_movies_db():
     """Load movies from JSON file"""
@@ -61,7 +63,7 @@ def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run(application.process_update(update))
+        asyncio.run_coroutine_threadsafe(application.process_update(update), app_loop)
         return 'ok', 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
@@ -270,13 +272,31 @@ async def setup_webhook(app_instance):
 
 async def initialize_bot():
     """Initialize the bot application"""
-    await application.initialize()
-    await application.start()
-    logger.info("Bot application initialized and started")
+    try:
+        await application.initialize()
+        await application.start()
+        logger.info("Bot application initialized and started")
+    except Exception as e:
+        logger.error(f"Failed to initialize bot: {e}")
+        raise
+
+async def shutdown_bot():
+    """Gracefully shutdown the bot"""
+    try:
+        logger.info("Shutting down bot...")
+        await application.stop()
+        logger.info("Bot stopped successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    asyncio.run_coroutine_threadsafe(shutdown_bot(), app_loop)
 
 def main() -> None:
     """Start the bot"""
-    global application
+    global application, app_loop
     
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
@@ -303,12 +323,27 @@ def main() -> None:
     application.add_error_handler(error_handler)
     
     logger.info("Setting up webhook...")
-    asyncio.run(initialize_bot())
-    asyncio.run(setup_webhook(application))
+    
+    app_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(app_loop)
+    
+    # Initialize bot
+    app_loop.run_until_complete(initialize_bot())
+    app_loop.run_until_complete(setup_webhook(application))
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Start Flask app
     logger.info("Starting Flask server on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+    finally:
+        app_loop.run_until_complete(shutdown_bot())
+        app_loop.close()
+        logger.info("Application closed")
 
 if __name__ == '__main__':
     main()
