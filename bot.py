@@ -62,15 +62,28 @@ def health_check():
 def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), app_loop)
+        json_data = request.get_json(force=True)
+        logger.info(f"[v0] Received webhook update: {json_data}")
+        
+        update = Update.de_json(json_data, application.bot)
+        logger.info(f"[v0] Processing update: {update}")
+        
+        # Use asyncio to process the update
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update), 
+            app_loop
+        )
+        # Wait for the coroutine to complete
+        future.result(timeout=5)
+        
         return 'ok', 200
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"[v0] Webhook error: {e}", exc_info=True)
         return 'error', 500
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start command handler"""
+    logger.info(f"[v0] /start command from {update.effective_user.id}")
     await update.message.reply_text(
         "🎬 Movie Search Bot Started!\n\n"
         "📝 Send movie names in the request group and I'll search for them.\n"
@@ -80,6 +93,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to add movies manually"""
     user_id = update.effective_user.id
+    logger.info(f"[v0] /sync command from user {user_id}")
     
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ আপনার এই কমান্ড ব্যবহারের অনুমতি নেই।\n❌ You don't have permission to use this command.")
@@ -95,6 +109,7 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def receive_movie_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive movie name from admin"""
     movie_name = update.message.text.strip().lower()
+    logger.info(f"[v0] Received movie name: {movie_name}")
     
     if len(movie_name) < 2:
         await update.message.reply_text("❌ মুভির নাম খুব ছোট / Movie name too short")
@@ -113,6 +128,7 @@ async def receive_movie_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Receive movie link from admin"""
     movie_link = update.message.text.strip()
     movie_name = context.user_data.get('movie_name')
+    logger.info(f"[v0] Received movie link for {movie_name}: {movie_link}")
     
     if not (movie_link.startswith('http://') or movie_link.startswith('https://')):
         await update.message.reply_text(
@@ -146,19 +162,26 @@ async def cancel_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Search for movie in request group"""
     
+    logger.info(f"[v0] Message received in chat {update.effective_chat.id}: {update.message.text}")
+    
     # Only respond in request group
     if update.effective_chat.id != REQUEST_GROUP_ID:
+        logger.info(f"[v0] Ignoring message from chat {update.effective_chat.id}, expected {REQUEST_GROUP_ID}")
         return
     
     movie_name = update.message.text.strip().lower()
     
     # Ignore commands
     if movie_name.startswith('/'):
+        logger.info(f"[v0] Ignoring command: {movie_name}")
         return
     
     # Ignore very short queries
     if len(movie_name) < 2:
+        logger.info(f"[v0] Ignoring short query: {movie_name}")
         return
+    
+    logger.info(f"[v0] Searching for movie: {movie_name}")
     
     searching_msg = await update.message.reply_text(
         f"🔍 Searching for '{movie_name}'...\n⏳ Searching... 5 seconds",
@@ -220,7 +243,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             
     except Exception as e:
-        logger.error(f"Error searching movie: {e}")
+        logger.error(f"[v0] Error searching movie: {e}", exc_info=True)
         await searching_msg.edit_text(f"❌ Error: {str(e)}")
 
 def calculate_similarity(s1: str, s2: str) -> float:
@@ -259,39 +282,42 @@ Use /sync to add new movies with links
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log errors"""
-    logger.error(f"Update {update} caused error {context.error}")
+    logger.error(f"[v0] Update {update} caused error {context.error}", exc_info=True)
 
 async def setup_webhook(app_instance):
     """Setup webhook for Telegram"""
     try:
         webhook_url = f"{WEBHOOK_URL}/webhook"
-        await app_instance.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to {webhook_url}")
+        await app_instance.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+        logger.info(f"[v0] Webhook set to {webhook_url}")
     except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+        logger.error(f"[v0] Failed to set webhook: {e}", exc_info=True)
 
 async def initialize_bot():
     """Initialize the bot application"""
     try:
         await application.initialize()
         await application.start()
-        logger.info("Bot application initialized and started")
+        logger.info("[v0] Bot application initialized and started")
     except Exception as e:
-        logger.error(f"Failed to initialize bot: {e}")
+        logger.error(f"[v0] Failed to initialize bot: {e}", exc_info=True)
         raise
 
 async def shutdown_bot():
     """Gracefully shutdown the bot"""
     try:
-        logger.info("Shutting down bot...")
+        logger.info("[v0] Shutting down bot...")
         await application.stop()
-        logger.info("Bot stopped successfully")
+        logger.info("[v0] Bot stopped successfully")
     except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
+        logger.error(f"[v0] Error during shutdown: {e}", exc_info=True)
 
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
-    logger.info(f"Received signal {signum}, shutting down...")
+    logger.info(f"[v0] Received signal {signum}, shutting down...")
     asyncio.run_coroutine_threadsafe(shutdown_bot(), app_loop)
 
 def main() -> None:
@@ -300,6 +326,8 @@ def main() -> None:
     
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
+    
+    logger.info("[v0] Starting Movie Search Bot...")
     
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
@@ -313,7 +341,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_sync)],
     )
     
-    # Add handlers
+    # Add handlers - order matters!
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(sync_conv_handler)
@@ -322,7 +350,7 @@ def main() -> None:
     # Add error handler
     application.add_error_handler(error_handler)
     
-    logger.info("Setting up webhook...")
+    logger.info("[v0] Setting up webhook...")
     
     app_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(app_loop)
@@ -335,15 +363,15 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal_handler)
     
     # Start Flask app
-    logger.info("Starting Flask server on port 5000...")
+    logger.info("[v0] Starting Flask server on port 5000...")
     try:
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
+        logger.info("[v0] Keyboard interrupt received")
     finally:
         app_loop.run_until_complete(shutdown_bot())
         app_loop.close()
-        logger.info("Application closed")
+        logger.info("[v0] Application closed")
 
 if __name__ == '__main__':
     main()
