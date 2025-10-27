@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 import json
-from flask import Flask
+from flask import Flask, request
 import threading
 
 # Configure logging
@@ -21,16 +21,29 @@ logger = logging.getLogger(__name__)
 MAIN_CHANNEL_ID = -1003117912335  # User's main channel
 REQUEST_GROUP_ID = -1002686709725  # Request group
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://your-app.onrender.com')
 
 # Movie database
 MOVIES_DB = {}
 SEARCH_CACHE = {}
 
 app = Flask(__name__)
+application = None
 
 @app.route('/')
 def health_check():
     return 'Bot is running', 200
+
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    """Handle incoming Telegram updates via webhook"""
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        await application.process_update(update)
+        return 'ok', 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return 'error', 500
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start command handler"""
@@ -209,18 +222,21 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log errors"""
     logger.error(f"Update {update} caused error {context.error}")
 
-def run_flask():
-    """Run Flask app on port 5000 (fixes Render timeout)"""
-    app.run(host='0.0.0.0', port=5000, debug=False)
+async def setup_webhook(app_instance):
+    """Setup webhook for Telegram"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        await app_instance.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
 
 def main() -> None:
     """Start the bot"""
+    global application
+    
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
-    
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("Flask server started on port 5000")
     
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
@@ -234,9 +250,12 @@ def main() -> None:
     # Add error handler
     application.add_error_handler(error_handler)
     
-    # Start bot
-    logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Setting up webhook...")
+    asyncio.run(setup_webhook(application))
+    
+    # Start Flask app (handles webhook requests)
+    logger.info("Starting Flask server on port 5000...")
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
 
 if __name__ == '__main__':
     main()
