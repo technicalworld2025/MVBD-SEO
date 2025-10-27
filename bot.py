@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -36,7 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🎬 Movie Search Bot Started!\n\n"
         "Send movie names in the request group and I'll search for them in our collection.\n"
-        "Admin: Use /sync to update movie database from main channel."
+        "Admin: Use /sync to load movies from main channel."
     )
 
 async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -109,13 +110,14 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if len(movie_name) < 2:
         return
     
-    # Show searching message
     searching_msg = await update.message.reply_text(
         f"🔍 Searching for '{movie_name}'...",
         reply_to_message_id=update.message.message_id
     )
     
     try:
+        await asyncio.sleep(5)
+        
         results = []
         
         # First pass: Exact and partial matches
