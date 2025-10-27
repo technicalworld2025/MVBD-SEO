@@ -2,11 +2,11 @@ import logging
 import os
 import re
 import asyncio
+import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telegram.error import TelegramError
-import json
 from flask import Flask, request
 import threading
 
@@ -18,18 +18,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAIN_CHANNEL_ID = -1003117912335  # User's main channel
 REQUEST_GROUP_ID = -1002686709725  # Request group
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://mvbd-seo.onrender.com')
+ADMIN_IDS = [6643046428]  # Replace with actual admin IDs
+MOVIES_DB_FILE = 'movies.json'
 
-# Movie database
-MOVIES_DB = {}
-SEARCH_CACHE = {}
+WAITING_FOR_MOVIE_NAME = 1
+WAITING_FOR_MOVIE_LINK = 2
 
 app = Flask(__name__)
 application = None
-loop = None
+
+def load_movies_db():
+    """Load movies from JSON file"""
+    if os.path.exists(MOVIES_DB_FILE):
+        try:
+            with open(MOVIES_DB_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading movies: {e}")
+            return {}
+    return {}
+
+def save_movies_db(movies_db):
+    """Save movies to JSON file"""
+    try:
+        with open(MOVIES_DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(movies_db, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved {len(movies_db)} movies to database")
+    except Exception as e:
+        logger.error(f"Error saving movies: {e}")
+
+MOVIES_DB = load_movies_db()
 
 @app.route('/')
 def health_check():
@@ -40,7 +61,6 @@ def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
-        # Run async function in sync context
         asyncio.run(application.process_update(update))
         return 'ok', 200
     except Exception as e:
@@ -51,62 +71,75 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start command handler"""
     await update.message.reply_text(
         "🎬 Movie Search Bot Started!\n\n"
-        "Send movie names in the request group and I'll search for them in our collection.\n"
-        "Admin: Use /sync to load movies from main channel."
+        "📝 Send movie names in the request group and I'll search for them.\n"
+        "👨‍💼 Admin: Use /sync to add movies to database."
     )
 
 async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to sync movies from main channel"""
+    """Admin command to add movies manually"""
     user_id = update.effective_user.id
     
-    ADMIN_IDS = [6643046428]  # Replace with actual admin IDs
-    
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You don't have permission to use this command.")
+        await update.message.reply_text("❌ আপনার এই কমান্ড ব্যবহারের অনুমতি নেই।\n❌ You don't have permission to use this command.")
         return
     
-    try:
-        msg = await update.message.reply_text("🔄 Syncing movies from main channel...")
-        
-        messages = []
-        try:
-            async for message in context.bot.get_chat_history(MAIN_CHANNEL_ID, limit=1000):
-                if message.text:
-                    messages.append(message)
-        except Exception as e:
-            logger.warning(f"get_chat_history error: {e}, trying alternative method")
-            await msg.edit_text("⚠️ Trying alternative method to fetch messages...")
-            try:
-                # Alternative: fetch using get_chat_history with different approach
-                chat = await context.bot.get_chat(MAIN_CHANNEL_ID)
-                await msg.edit_text(f"Channel found: {chat.title}\nFetching messages...")
-            except Exception as e2:
-                logger.error(f"Alternative method failed: {e2}")
-                await msg.edit_text(f"❌ Error: Bot needs admin access to channel. Error: {str(e2)}")
-                return
-        
-        # Parse movie titles from messages
-        movie_count = 0
-        for message in messages:
-            text = message.text
-            # Extract movie title (adjust regex based on your format)
-            match = re.search(r'📽️\s*(.+?)(?:\n|$)', text)
-            if match:
-                title = match.group(1).strip().lower()
-                if title not in MOVIES_DB:
-                    MOVIES_DB[title] = {
-                        'message_id': message.message_id,
-                        'full_text': text,
-                        'date': message.date.isoformat()
-                    }
-                    movie_count += 1
-        
-        await msg.edit_text(f"✅ Synced {movie_count} movies from main channel!\n\nDatabase: {len(MOVIES_DB)} total movies")
-        logger.info(f"Synced {movie_count} movies. Total: {len(MOVIES_DB)}")
-        
-    except Exception as e:
-        logger.error(f"Error syncing movies: {e}")
-        await update.message.reply_text(f"❌ Error syncing: {str(e)}")
+    await update.message.reply_text(
+        "🎬 মুভি যোগ করুন / Add Movie\n\n"
+        "মুভির নাম লিখুন / Enter movie name:"
+    )
+    
+    return WAITING_FOR_MOVIE_NAME
+
+async def receive_movie_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive movie name from admin"""
+    movie_name = update.message.text.strip().lower()
+    
+    if len(movie_name) < 2:
+        await update.message.reply_text("❌ মুভির নাম খুব ছোট / Movie name too short")
+        return WAITING_FOR_MOVIE_NAME
+    
+    context.user_data['movie_name'] = movie_name
+    
+    await update.message.reply_text(
+        f"✅ মুভি নাম: {movie_name}\n\n"
+        f"এখন লিংক পাঠান / Now send the movie link:"
+    )
+    
+    return WAITING_FOR_MOVIE_LINK
+
+async def receive_movie_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive movie link from admin"""
+    movie_link = update.message.text.strip()
+    movie_name = context.user_data.get('movie_name')
+    
+    if not (movie_link.startswith('http://') or movie_link.startswith('https://')):
+        await update.message.reply_text(
+            "❌ অবৈধ লিংক / Invalid link\n"
+            "লিংক http:// বা https:// দিয়ে শুরু হতে হবে / Link must start with http:// or https://"
+        )
+        return WAITING_FOR_MOVIE_LINK
+    
+    MOVIES_DB[movie_name] = {
+        'link': movie_link,
+        'added_by': update.effective_user.username or update.effective_user.first_name,
+        'date': datetime.now().isoformat()
+    }
+    
+    save_movies_db(MOVIES_DB)
+    
+    await update.message.reply_text(
+        f"✅ মুভি যোগ করা হয়েছে / Movie added!\n\n"
+        f"📽️ নাম / Name: {movie_name}\n"
+        f"🔗 লিংক / Link: {movie_link}\n\n"
+        f"📊 মোট মুভি / Total movies: {len(MOVIES_DB)}"
+    )
+    
+    return ConversationHandler.END
+
+async def cancel_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel sync operation"""
+    await update.message.reply_text("❌ বাতিল করা হয়েছে / Cancelled")
+    return ConversationHandler.END
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Search for movie in request group"""
@@ -126,7 +159,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     searching_msg = await update.message.reply_text(
-        f"🔍 Searching for '{movie_name}'...",
+        f"🔍 Searching for '{movie_name}'...\n⏳ Searching... 5 seconds",
         reply_to_message_id=update.message.message_id
     )
     
@@ -138,9 +171,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # First pass: Exact and partial matches
         for db_title, movie_info in MOVIES_DB.items():
             if movie_name in db_title:
-                results.append((db_title, movie_info, 1.0))  # Exact match
+                results.append((db_title, movie_info, 1.0))
             elif db_title in movie_name:
-                results.append((db_title, movie_info, 0.9))  # Partial match
+                results.append((db_title, movie_info, 0.9))
         
         # Second pass: Fuzzy search if no exact matches
         if not results:
@@ -153,17 +186,16 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         results.sort(key=lambda x: x[2], reverse=True)
         
         if results:
-            # Found movies
             response_text = f"✅ Found {len(results)} result(s) for '{movie_name}':\n\n"
             
             keyboard = []
-            for idx, (title, info, score) in enumerate(results[:5]):  # Show top 5 results
+            for idx, (title, info, score) in enumerate(results[:5]):
                 response_text += f"{idx + 1}. {title}\n"
                 
                 keyboard.append([
                     InlineKeyboardButton(
                         f"📥 Get Movie {idx + 1}",
-                        url=f"https://t.me/c/1003117912335/{info['message_id']}"
+                        url=info['link']
                     )
                 ])
             
@@ -176,12 +208,12 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             
         else:
-            # Not found
             await searching_msg.edit_text(
-                f"❌ '{movie_name}' not found in our collection.\n\n"
-                f"📝 Please ask admin with the correct movie name.\n"
-                f"💾 We have {len(MOVIES_DB)} movies in database.\n"
-                f"👤 Requested by: {update.effective_user.mention_html()}",
+                f"❌ '{movie_name}' আমাদের ডাটাবেসে পাওয়া যায়নি।\n"
+                f"❌ '{movie_name}' not found in our database.\n\n"
+                f"📝 অ্যাডমিনের অপেক্ষা করুন / Please wait for admin.\n"
+                f"💾 আমাদের কাছে {len(MOVIES_DB)} টি মুভি আছে / We have {len(MOVIES_DB)} movies.\n"
+                f"👤 অনুরোধকারী / Requested by: {update.effective_user.mention_html()}",
                 parse_mode='HTML'
             )
             
@@ -208,15 +240,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = """
 🎬 Movie Search Bot Help
 
-Commands:
+📋 Commands:
 /start - Start the bot
 /help - Show this help message
-/sync - Sync movies from main channel (Admin only)
+/sync - Add movies to database (Admin only)
 
-How to use:
+📝 How to use:
 1. Send a movie name in the request group
-2. Bot will search in main channel
+2. Bot will search in database
 3. Click the button to get the movie
+
+👨‍💼 Admin:
+Use /sync to add new movies with links
     """
     await update.message.reply_text(help_text)
 
@@ -249,10 +284,19 @@ def main() -> None:
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
+    sync_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("sync", sync_movies)],
+        states={
+            WAITING_FOR_MOVIE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_movie_name)],
+            WAITING_FOR_MOVIE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_movie_link)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_sync)],
+    )
+    
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("sync", sync_movies))
+    application.add_handler(sync_conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     
     # Add error handler
@@ -262,7 +306,7 @@ def main() -> None:
     asyncio.run(initialize_bot())
     asyncio.run(setup_webhook(application))
     
-    # Start Flask app (handles webhook requests)
+    # Start Flask app
     logger.info("Starting Flask server on port 5000...")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
 
