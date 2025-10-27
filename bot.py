@@ -6,6 +6,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 import json
+from flask import Flask
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -15,13 +17,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAIN_CHANNEL_ID = -1002570721543  # Replace with your main channel ID (https://t.me/MVPMCC)
-REQUEST_GROUP_ID = -1002686709725  # Replace with your request group ID (https://t.me/moviesversebdreq)
+MAIN_CHANNEL_ID = -1003117912335  # User's main channel
+REQUEST_GROUP_ID = -1002686709725  # Request group
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
-# Movie database (stores movie titles and their message IDs from main channel)
+# Movie database
 MOVIES_DB = {}
 SEARCH_CACHE = {}
+
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return 'Bot is running', 200
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start command handler"""
@@ -35,7 +43,6 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Admin command to sync movies from main channel"""
     user_id = update.effective_user.id
     
-    # Check if user is admin (you can add admin IDs here)
     ADMIN_IDS = [6643046428]  # Replace with actual admin IDs
     
     if user_id not in ADMIN_IDS:
@@ -47,15 +54,20 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
         messages = []
         try:
-            # Use get_chat_history() to fetch messages from channel
             async for message in context.bot.get_chat_history(MAIN_CHANNEL_ID, limit=1000):
                 if message.text:
                     messages.append(message)
-        except AttributeError:
-            # Fallback: if get_chat_history doesn't exist, try alternative method
-            logger.warning("get_chat_history not available, using alternative method")
-            await msg.edit_text("⚠️ Channel message fetching not fully supported. Please ensure bot has proper permissions.")
-            return
+        except Exception as e:
+            logger.warning(f"get_chat_history error: {e}, trying alternative method")
+            await msg.edit_text("⚠️ Trying alternative method to fetch messages...")
+            try:
+                # Alternative: fetch using get_chat_history with different approach
+                chat = await context.bot.get_chat(MAIN_CHANNEL_ID)
+                await msg.edit_text(f"Channel found: {chat.title}\nFetching messages...")
+            except Exception as e2:
+                logger.error(f"Alternative method failed: {e2}")
+                await msg.edit_text(f"❌ Error: Bot needs admin access to channel. Error: {str(e2)}")
+                return
         
         # Parse movie titles from messages
         movie_count = 0
@@ -73,8 +85,8 @@ async def sync_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     }
                     movie_count += 1
         
-        await msg.edit_text(f"✅ Synced {movie_count} movies from main channel!")
-        logger.info(f"Synced {movie_count} movies")
+        await msg.edit_text(f"✅ Synced {movie_count} movies from main channel!\n\nDatabase: {len(MOVIES_DB)} total movies")
+        logger.info(f"Synced {movie_count} movies. Total: {len(MOVIES_DB)}")
         
     except Exception as e:
         logger.error(f"Error syncing movies: {e}")
@@ -93,6 +105,10 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if movie_name.startswith('/'):
         return
     
+    # Ignore very short queries
+    if len(movie_name) < 2:
+        return
+    
     # Show searching message
     searching_msg = await update.message.reply_text(
         f"🔍 Searching for '{movie_name}'...",
@@ -100,32 +116,37 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     try:
-        # Search in database
         results = []
-        for db_title, movie_info in MOVIES_DB.items():
-            if movie_name in db_title or db_title in movie_name:
-                results.append((db_title, movie_info))
         
-        # Also do fuzzy search
+        # First pass: Exact and partial matches
+        for db_title, movie_info in MOVIES_DB.items():
+            if movie_name in db_title:
+                results.append((db_title, movie_info, 1.0))  # Exact match
+            elif db_title in movie_name:
+                results.append((db_title, movie_info, 0.9))  # Partial match
+        
+        # Second pass: Fuzzy search if no exact matches
         if not results:
             for db_title, movie_info in MOVIES_DB.items():
                 similarity = calculate_similarity(movie_name, db_title)
                 if similarity > 0.6:
-                    results.append((db_title, movie_info))
+                    results.append((db_title, movie_info, similarity))
+        
+        # Sort by similarity score
+        results.sort(key=lambda x: x[2], reverse=True)
         
         if results:
             # Found movies
             response_text = f"✅ Found {len(results)} result(s) for '{movie_name}':\n\n"
             
             keyboard = []
-            for idx, (title, info) in enumerate(results[:5]):  # Show top 5 results
+            for idx, (title, info, score) in enumerate(results[:5]):  # Show top 5 results
                 response_text += f"{idx + 1}. {title}\n"
                 
-                # Create button to view in main channel
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"📥 Get {idx + 1}",
-                        url=f"https://t.me/MVPMCC/{info['message_id']}"
+                        f"📥 Get Movie {idx + 1}",
+                        url=f"https://t.me/c/1003117912335/{info['message_id']}"
                     )
                 ])
             
@@ -141,7 +162,8 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Not found
             await searching_msg.edit_text(
                 f"❌ '{movie_name}' not found in our collection.\n\n"
-                f"📝 Please ask admin with the correct movie name and year.\n"
+                f"📝 Please ask admin with the correct movie name.\n"
+                f"💾 We have {len(MOVIES_DB)} movies in database.\n"
                 f"👤 Requested by: {update.effective_user.mention_html()}",
                 parse_mode='HTML'
             )
@@ -151,18 +173,16 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await searching_msg.edit_text(f"❌ Error: {str(e)}")
 
 def calculate_similarity(s1: str, s2: str) -> float:
-    """Calculate similarity between two strings (simple Levenshtein-like)"""
+    """Calculate similarity between two strings"""
     s1 = s1.lower().strip()
     s2 = s2.lower().strip()
     
     if s1 == s2:
         return 1.0
     
-    # Check if one contains the other
     if s1 in s2 or s2 in s1:
         return 0.8
     
-    # Simple character matching
     matches = sum(1 for c in s1 if c in s2)
     return matches / max(len(s1), len(s2))
 
@@ -180,9 +200,6 @@ How to use:
 1. Send a movie name in the request group
 2. Bot will search in main channel
 3. Click the button to get the movie
-
-Main Channel: https://t.me/MVPMCC
-Request Group: https://t.me/moviesversebdreq
     """
     await update.message.reply_text(help_text)
 
@@ -190,10 +207,18 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log errors"""
     logger.error(f"Update {update} caused error {context.error}")
 
+def run_flask():
+    """Run Flask app on port 5000 (fixes Render timeout)"""
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
 def main() -> None:
     """Start the bot"""
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask server started on port 5000")
     
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
